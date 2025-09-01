@@ -1,0 +1,35 @@
+# Core Application
+fastapi
+uvicorn[standard]
+pydantic
+
+# LLM & Agentic Components
+langchain
+langchain-groq
+langchain-openai
+langchain-core
+langgraph
+openai
+langchain-mcp-adapters
+
+# Model Context Protocol
+mcp[cli]
+
+# Data & Retrieval
+duckdb
+sentence-transformers
+faiss-cpu
+numpy
+pandas
+networkx
+
+# HTTP Client & Async
+aiohttp
+backoff
+
+# Utilities
+tqdm
+
+# Testing
+pytest
+pytest-asyncio
