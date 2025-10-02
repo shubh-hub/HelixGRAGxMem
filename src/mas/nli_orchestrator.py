@@ -82,24 +82,23 @@ class NLIMASOrchestrator:
             # Get project root path
             project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
             
-            # MCP server configurations
-            mcp_servers = {
+            # MCP connection configurations (correct format)
+            mcp_connections = {
                 "kg_server": {
                     "command": "python3",
-                    "args": [os.path.join(project_root, "scripts", "kg_server.py")],
-                    "env": None
+                    "args": [os.path.join(project_root, "src", "mcp", "servers", "kg_server.py")],
+                    "transport": "stdio"
                 },
                 "dense_server": {
                     "command": "python3", 
-                    "args": [os.path.join(project_root, "scripts", "dense_server.py")],
-                    "env": None
+                    "args": [os.path.join(project_root, "src", "mcp", "servers", "dense_server.py")],
+                    "transport": "stdio"
                 }
             }
             
-            # Create MCP client
-            self.mcp_client = MultiServerMCPClient(mcp_servers)
-            await self.mcp_client.connect()
-            self.tools = await self.mcp_client.get_available_tools()
+            # Create MCP client with proper connection format
+            self.mcp_client = MultiServerMCPClient(mcp_connections)
+            self.tools = await self.mcp_client.get_tools()
             
             logger.info(f"✅ MCP tools initialized: {[tool.name for tool in self.tools]}")
             
@@ -248,36 +247,40 @@ Focus on biomedical accuracy and choose the best retrieval strategy."""
         dense_evidence = []
         
         try:
-            # Use MCP client to call tools if available
-            if self.mcp_client:
+            # Use MCP tools if available
+            if self.tools:
                 # Find and invoke KG search tool if in KG or hybrid mode
                 if state["mode"] in ["kg_only", "hybrid"]:
-                    kg_result = await self.mcp_client.call_tool("search_kg", {
-                        "query": state['query'],
-                        "intent": state.get('intent', 'factoid'),
-                        "max_results": 5
-                    })
-                    
-                    # Parse KG result - it's a JSON string
-                    if isinstance(kg_result, str):
-                        kg_data = json.loads(kg_result)
-                        kg_evidence = kg_data.get("results", [])
-                    else:
-                        kg_evidence = kg_result.get("results", [])
+                    kg_tool = next((tool for tool in self.tools if tool.name == "search_kg"), None)
+                    if kg_tool:
+                        kg_result = await kg_tool.ainvoke({
+                            "query": state['query'],
+                            "intent": state.get('intent', 'factoid'),
+                            "max_results": 5
+                        })
+                        
+                        # Parse KG result - it's a JSON string
+                        if isinstance(kg_result, str):
+                            kg_data = json.loads(kg_result)
+                            kg_evidence = kg_data.get("results", [])
+                        else:
+                            kg_evidence = kg_result.get("results", [])
                 
                 # Find and invoke Dense search tool if in dense or hybrid mode
                 if state["mode"] in ["dense_only", "hybrid"]:
-                    dense_result = await self.mcp_client.call_tool("search_passages", {
-                        "query": state['query'],
-                        "max_results": 5
-                    })
-                    
-                    # Parse Dense result - it's a JSON string
-                    if isinstance(dense_result, str):
-                        dense_data = json.loads(dense_result)
-                        dense_evidence = dense_data.get("results", [])
-                    else:
-                        dense_evidence = dense_result.get("results", [])
+                    dense_tool = next((tool for tool in self.tools if tool.name == "search_passages"), None)
+                    if dense_tool:
+                        dense_result = await dense_tool.ainvoke({
+                            "query": state['query'],
+                            "max_results": 5
+                        })
+                        
+                        # Parse Dense result - it's a JSON string
+                        if isinstance(dense_result, str):
+                            dense_data = json.loads(dense_result)
+                            dense_evidence = dense_data.get("results", [])
+                        else:
+                            dense_evidence = dense_result.get("results", [])
                         
         except Exception as e:
             logger.warning(f"Evidence retrieval failed: {e}")
@@ -419,7 +422,8 @@ Provide a comprehensive, accurate answer based on the evidence. If evidence is l
         try:
             # Close MCP client connections if any
             if hasattr(self, 'mcp_client') and self.mcp_client:
-                await self.mcp_client.disconnect()
+                # MCP client cleanup is handled automatically
+                pass
             logger.info("🧹 Orchestrator cleanup completed")
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")

@@ -16,7 +16,11 @@ from .dense_retriever import DenseRetriever
 from .walker import KGWalker
 from .edge_predictor import EdgePredictor
 from .relation_pruner import RelationPruner
-from ..config import settings
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent))
+
+from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +58,7 @@ class HybridRetriever:
                k: int = 10,
                kg_weight: float = 0.6,
                dense_weight: float = 0.4,
+               intent: str = "factoid",
                trace_id: str = None) -> List[Dict[str, Any]]:
         """
         Perform hybrid search combining KG and Dense retrieval
@@ -85,8 +90,8 @@ class HybridRetriever:
             kg_results = []
             dense_results = []
             
-            # Always perform dense search
-            dense_results = self.dense_retriever.search(query, k=k*2, trace_id=trace_id)
+            # Always perform dense search with intent awareness
+            dense_results = self.dense_retriever.search_with_intent(query, intent=intent, k=k*2, trace_id=trace_id)
             
             # Perform KG search if entities provided or can be extracted
             if entities or self._has_openai_key():
@@ -95,7 +100,7 @@ class HybridRetriever:
                     entities = self._extract_entities_from_query(query)
                 
                 if entities:
-                    kg_results = self._kg_search(query, entities, k=k*2, trace_id=trace_id)
+                    kg_results = self._kg_search(query, entities, k=k*2, intent=intent, trace_id=trace_id)
             
             # Fuse results
             fused_results = self._fuse_results(
@@ -124,16 +129,18 @@ class HybridRetriever:
                    query: str, 
                    entities: List[str], 
                    k: int = 10,
+                   intent: str = "factoid",
                    trace_id: str = None) -> List[Dict[str, Any]]:
-        """Perform KG-based search"""
+        """Perform KG-based search with intent awareness"""
         try:
-            # Use KG walker to find relevant paths
+            # Use KG walker to find relevant paths with intent
             paths = self.kg_walker.walk(
                 start_entities=entities,
                 query_context=query,
                 max_hops=3,
                 max_paths=k,
-                confidence_threshold=0.3
+                confidence_threshold=0.3,
+                intent=intent
             )
             
             # Convert paths to retrieval results
@@ -271,19 +278,19 @@ class HybridRetriever:
         
         return final_results
     
-    def search_kg_only(self, query: str, entities: List[str], k: int = 10, trace_id: str = None) -> List[Dict[str, Any]]:
+    def search_kg_only(self, query: str, entities: List[str], k: int = 10, intent: str = "factoid", trace_id: str = None) -> List[Dict[str, Any]]:
         """Perform KG-only search"""
         if not self.initialized:
             self.initialize()
         
-        return self._kg_search(query, entities, k, trace_id)
+        return self._kg_search(query, entities, k, intent, trace_id)
     
-    def search_dense_only(self, query: str, k: int = 10, trace_id: str = None) -> List[Dict[str, Any]]:
+    def search_dense_only(self, query: str, k: int = 10, intent: str = "factoid", trace_id: str = None) -> List[Dict[str, Any]]:
         """Perform Dense-only search"""
         if not self.initialized:
             self.initialize()
         
-        return self.dense_retriever.search(query, k, trace_id)
+        return self.dense_retriever.search_with_intent(query, intent, k, trace_id)
     
     def get_retrieval_stats(self) -> Dict[str, Any]:
         """Get retrieval statistics and health info"""
@@ -314,3 +321,73 @@ class HybridRetriever:
                 stats["stats_error"] = str(e)
         
         return stats
+    
+    async def retrieve_batch(self, queries: List[str], mode: str = "hybrid", max_results_per_query: int = 10, kg_weight: float = 0.6, dense_weight: float = 0.4) -> List[List[Dict[str, Any]]]:
+        """Batch retrieval for multiple queries"""
+        if not self.initialized:
+            self.initialize()
+        
+        batch_results = []
+        
+        if mode == "dense":
+            # Dense-only batch search
+            batch_results = self.dense_retriever.batch_search(queries, k=max_results_per_query)
+        
+        elif mode == "kg":
+            # KG-only batch search
+            for query in queries:
+                entities = self.kg_walker._resolve_entities_from_query(query)
+                if entities:
+                    kg_results = self._kg_search(query, entities, k=max_results_per_query)
+                    batch_results.append(kg_results)
+                else:
+                    batch_results.append([])
+        
+        else:  # hybrid mode
+            # Hybrid batch search
+            for query in queries:
+                result = self.search(
+                    query=query,
+                    k=max_results_per_query,
+                    kg_weight=kg_weight,
+                    dense_weight=dense_weight
+                )
+                batch_results.append(result)
+        
+        return batch_results
+    
+    async def retrieve_adaptive(self, query: str, intent: str = "factoid", max_results: int = 10) -> List[Dict[str, Any]]:
+        """Adaptive retrieval based on query characteristics"""
+        if not self.initialized:
+            self.initialize()
+        
+        # Analyze query to determine optimal strategy
+        query_words = len(query.split())
+        
+        # Intent-based weight adjustment
+        if intent == "causal":
+            kg_weight, dense_weight = 0.7, 0.3  # Favor KG for causal reasoning
+        elif intent == "factoid":
+            kg_weight, dense_weight = 0.5, 0.5  # Balanced
+        elif intent == "therapeutic":
+            kg_weight, dense_weight = 0.8, 0.2  # Strong KG preference for treatments
+        else:
+            kg_weight, dense_weight = 0.6, 0.4  # Default
+        
+        # Query complexity adjustment
+        if query_words > 15:
+            # Complex queries benefit from dense search
+            dense_weight += 0.1
+            kg_weight -= 0.1
+        elif query_words < 5:
+            # Simple queries benefit from KG
+            kg_weight += 0.1
+            dense_weight -= 0.1
+        
+        return self.search(
+            query=query,
+            k=max_results,
+            kg_weight=kg_weight,
+            dense_weight=dense_weight,
+            intent=intent
+        )

@@ -5,17 +5,19 @@ Relation Pruner - Multi-signal Relation Filtering
 Implements intelligent relation filtering using multiple signals:
 - Semantic relevance to query
 - Biomedical domain knowledge
-- Graph topology metrics
-- Confidence-guided pruning
 """
 
 import logging
-from typing import List, Dict, Any, Set, Tuple
+from typing import List, Dict, Any, Set, Tuple, Optional
 import duckdb
-import numpy as np
-from collections import defaultdict, Counter
+import math
+from collections import defaultdict
 
-from ..config import settings
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent))
+
+from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +119,128 @@ class RelationPruner:
         except Exception as e:
             logger.error(f"Failed to compute relation statistics: {e}")
     
+    def get_relations_for_node(self, node_name: str, subquestion: str, intent: str) -> List[Tuple[str, float]]:
+        """Get relations for node using multi-signal scoring formula."""
+        if not self.relation_stats:
+            self._compute_relation_statistics()
+        
+        try:
+            # Get node type
+            node_type = self._get_node_type(node_name)
+            if not node_type:
+                return []
+            
+            # Get candidate relations from type-relation prior table
+            type_relations = self.kg_db.execute("""
+                SELECT predicate, prior FROM type_rel_prior 
+                WHERE source_type = ?
+                ORDER BY prior DESC
+            """, (node_type,)).fetchall()
+            
+            if not type_relations:
+                return []
+            
+            candidate_relations = [rel for rel, _ in type_relations]
+            
+            # Calculate semantic similarity
+            semantic_scores = self._calculate_semantic_similarity(subquestion, candidate_relations)
+            
+            # Calculate final scores using exact formula
+            scored_relations = []
+            for relation in candidate_relations:
+                # Get components
+                prior_score = next((prior for rel, prior in type_relations if rel == relation), 0.0)
+                
+                # Check if relation exists for this node
+                exists_result = self.kg_db.execute("""
+                    SELECT COUNT(*) FROM triples 
+                    WHERE subject = ? AND predicate = ?
+                """, (node_name, relation)).fetchone()
+                exists = 1.0 if exists_result and exists_result[0] > 0 else 0.0
+                
+                # Get degree and normalize
+                degree_result = self.kg_db.execute("""
+                    SELECT COUNT(*) FROM triples 
+                    WHERE subject = ? AND predicate = ?
+                """, (node_name, relation)).fetchone()
+                degree = degree_result[0] if degree_result else 0
+                degree_norm = min(degree, 50) / 50.0
+                
+                # Get semantic similarity
+                semantic_sim = semantic_scores.get(relation, 0.0)
+                
+                # Apply exact formula: 0.40*semantic + 0.30*prior + 0.20*exists + 0.10*degree
+                final_score = (
+                    0.40 * semantic_sim + 
+                    0.30 * prior_score + 
+                    0.20 * exists + 
+                    0.10 * degree_norm
+                )
+                
+                scored_relations.append((relation, final_score))
+            
+            # Sort by score descending
+            scored_relations.sort(key=lambda x: x[1], reverse=True)
+            return scored_relations
+            
+        except Exception as e:
+            logger.error(f"Failed to get relations for node {node_name}: {e}")
+            return []
+    
+    def _get_node_type(self, node_name: str) -> Optional[str]:
+        """Get node type from nodes table."""
+        try:
+            result = self.kg_db.execute(
+                "SELECT type FROM nodes WHERE name = ? LIMIT 1", 
+                (node_name,)
+            ).fetchone()
+            return result[0] if result else None
+        except Exception as e:
+            logger.error(f"Failed to get node type for {node_name}: {e}")
+            return None
+    
+    def _calculate_semantic_similarity(self, subquestion: str, relations: List[str]) -> Dict[str, float]:
+        """Calculate semantic similarity between subquestion and relations."""
+        # Simple keyword-based semantic similarity for now
+        # In full implementation, this would use relation gloss embeddings
+        similarities = {}
+        
+        subquestion_lower = subquestion.lower()
+        
+        for relation in relations:
+            # Direct keyword matching
+            if relation.lower() in subquestion_lower:
+                similarities[relation] = 1.0
+                continue
+            
+            # Semantic keyword groups matching
+            relation_keywords = {
+                "treats": ["treat", "therapy", "drug", "medication", "cure"],
+                "causes": ["cause", "lead", "result", "trigger", "induce"],
+                "prevents": ["prevent", "avoid", "protect", "block"],
+                "regulates": ["regulate", "control", "modulate", "affect"],
+                "interacts_with": ["interact", "bind", "connect", "associate"]
+            }
+            
+            max_sim = 0.0
+            keywords = relation_keywords.get(relation, [relation.replace("_", " ")])
+            
+            for keyword in keywords:
+                if keyword in subquestion_lower:
+                    max_sim = max(max_sim, 0.8)
+            
+            # Partial word matching
+            relation_words = relation.replace("_", " ").split()
+            subquestion_words = subquestion_lower.split()
+            
+            word_matches = sum(1 for word in relation_words if word in subquestion_words)
+            if word_matches > 0:
+                max_sim = max(max_sim, 0.6 * (word_matches / len(relation_words)))
+            
+            similarities[relation] = max_sim if max_sim > 0 else 0.1  # Minimum baseline
+        
+        return similarities
+    
     def prune_relations(self, 
                        relations: List[str], 
                        query_context: str = "",
@@ -156,7 +280,7 @@ class RelationPruner:
                     "components": self._get_score_components(relation, query_context)
                 })
         
-        # Sort by score and return top relations
+        # Sort by score and return top relations (legacy method)
         scored_relations.sort(key=lambda x: x["score"], reverse=True)
         return scored_relations[:max_relations]
     

@@ -10,53 +10,52 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
-from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
+import duckdb
+from typing import List, Dict, Any, Optional
 
 from mcp.server.fastmcp import FastMCP
-import duckdb
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent.parent))
 
-# Add project root to path for imports
-project_root = Path(__file__).parent.parent.parent.parent
-sys.path.insert(0, str(project_root))
-
-from src.core import KGWalker, RelationPruner, EdgePredictor
-from src.config import settings
+from core import KGWalker, RelationPruner, EdgePredictor
+from core.retrieval_engine import HybridRetriever
+from config import settings
 
 logger = logging.getLogger(__name__)
 
 # Global components - initialized once per server
 kg_walker = None
-relation_pruner = None
-edge_predictor = None
+hybrid_retriever = None
 kg_db = None
 
 @asynccontextmanager
 async def kg_lifespan(server: FastMCP):
-    """Initialize core components on server startup"""
-    global kg_walker, relation_pruner, edge_predictor, kg_db
+    """Initialize enhanced KG components on server startup"""
+    global kg_walker, hybrid_retriever, kg_db
     
-    logger.info("🚀 Starting KG MCP Server with core components...")
+    logger.info("🚀 Starting Enhanced KG MCP Server with scalable components...")
     
     try:
         # Initialize database connection
         kg_db = duckdb.connect(settings.DB_PATH)
         
-        # Initialize core components
+        # Initialize enhanced components
         kg_walker = KGWalker()
         kg_walker.connect_kg(settings.DB_PATH)
         
-        relation_pruner = RelationPruner()
-        relation_pruner.connect_kg(settings.DB_PATH)
+        hybrid_retriever = HybridRetriever()
+        hybrid_retriever.initialize()
         
         edge_predictor = EdgePredictor()
         edge_predictor.connect_kg(settings.DB_PATH)
         
-        logger.info("✅ KG MCP Server initialized with core components")
+        logger.info("✅ Enhanced KG Server initialized with scalable components")
         yield
         
     except Exception as e:
-        logger.error(f"Failed to initialize KG MCP Server: {e}")
+        logger.error(f"Failed to initialize Enhanced KG Server: {e}")
         raise
     finally:
         if kg_db:
@@ -67,68 +66,108 @@ mcp = FastMCP("KG Server", lifespan=kg_lifespan)
 
 @mcp.tool()
 async def search_kg(
-    query: str,
-    intent: str = "factoid",
-    max_results: int = 10,
-    max_hops: int = 3,
-    entities: Optional[List[str]] = None
+    query: str, 
+    entities: List[str] = None, 
+    intent: str = "factoid", 
+    max_results: int = 10
 ) -> Dict[str, Any]:
     """
-    Perform sophisticated KG search using core components
+    Search knowledge graph using enhanced entropy-based traversal
     
     Args:
-        query: Search query
-        intent: Query intent (factoid, enumeration, etc.)
-        max_results: Maximum number of results
-        max_hops: Maximum traversal hops
-        entities: Starting entities (optional)
-        
+        query: Natural language query
+        intent: Query intent (factoid, causal, enumeration, therapeutic)
+        max_results: Maximum results to return
+    
     Returns:
-        Search results with confidence-scored paths
+        Dict with results and metadata
     """
     global kg_walker, kg_db
     
     try:
-        # Extract entities if not provided
+        # Initialize components if not already done
+        if kg_db is None:
+            kg_db = duckdb.connect(settings.DB_PATH)
+            logger.info("✅ KG database connected")
+        
+        if kg_walker is None:
+            kg_walker = KGWalker()
+            kg_walker.connect_kg(settings.DB_PATH)
+            logger.info("✅ KG Walker initialized")
+        
+        # Use provided entities or extract from query
+        if entities is None:
+            entities = []
+        
         if not entities:
-            result = kg_db.execute("""
-                SELECT DISTINCT subject FROM triples 
-                WHERE subject ILIKE ? OR object ILIKE ?
-                LIMIT 5
-            """, (f"%{query.split()[0]}%", f"%{query.split()[0]}%")).fetchall()
-            entities = [row[0] for row in result if row[0]]
+            entities = []
+            if kg_db:
+                # Extract potential entities from query using multiple approaches
+                query_lower = query.lower()
+                
+                # Look for entities that appear in the query
+                words = query_lower.split()
+                for word in words:
+                    if len(word) > 3:  # Skip short words
+                        result = kg_db.execute("""
+                            SELECT DISTINCT subject FROM triples 
+                            WHERE LOWER(subject) LIKE ?
+                            LIMIT 5
+                        """, (f"%{word}%",)).fetchall()
+                        
+                        for row in result:
+                            entity = row[0]
+                            # Check if the full entity name appears in the query
+                            if entity.lower() in query_lower:
+                                entities.append(entity)
+                
+                # If no entities found, try word-by-word matching
+                if not entities:
+                    words = query.split()
+                    for word in words:
+                        if len(word) > 3:  # Skip short words
+                            result = kg_db.execute("""
+                                SELECT DISTINCT subject FROM triples 
+                                WHERE LOWER(subject) LIKE ?
+                                LIMIT 3
+                            """, (f"%{word.lower()}%",)).fetchall()
+                            entities.extend([row[0] for row in result if row[0]])
+                            if entities:
+                                break
         
         if not entities:
             return {"results": [], "total_found": 0, "method": "core_kg_walker"}
         
-        # Use KGWalker for sophisticated graph traversal
-        paths = kg_walker.walk(
-            start_entities=entities,
-            query_context=query,
-            max_hops=max_hops,
-            max_paths=max_results,
-            confidence_threshold=0.3
+        # Use priority queue traversal for methodology alignment
+        results = kg_walker.walk_priority_queue(
+            query=query,
+            seed_entities=entities,
+            intent=intent,
+            max_expansions=1000
         )
         
         # Format results for MCP response
-        results = []
-        for path_info in paths:
-            results.append({
-                "path": path_info["path"],
-                "relations": path_info["relations"],
-                "confidence": path_info["confidence"],
-                "hops": path_info["hops"],
-                "entities": path_info.get("entities_found", [])
+        formatted_results = []
+        for path_info in results:
+            formatted_results.append({
+                "entity": path_info.get("entity", ""),
+                "path": path_info.get("path", []),
+                "relations": path_info.get("relation", ""),  # Single relation from priority queue
+                "confidence": path_info.get("confidence", 0.0),
+                "depth": path_info.get("depth", 0),
+                "reasoning": path_info.get("reasoning", "")
             })
         
         return {
-            "results": results,
-            "total_found": len(results),
-            "method": "core_kg_walker"
+            "results": formatted_results,
+            "total_found": len(formatted_results),
+            "entities_resolved": len(entities),
+            "cache_enabled": False,
+            "method": "priority_queue_traversal"
         }
         
     except Exception as e:
-        logger.error(f"KG search failed: {e}")
+        logger.error(f"Enhanced KG search failed: {e}")
         return {"error": str(e), "results": []}
 
 @mcp.tool()
@@ -274,6 +313,11 @@ async def get_schema_info() -> Dict[str, Any]:
             "schema": {
                 "relations": [{"relation": r[0], "count": r[1]} for r in relations],
                 "entity_types": [{"type": t[0], "count": t[1]} for t in entity_types]
+            },
+            "components_initialized": {
+                "kg_walker": kg_walker is not None,
+                "hybrid_retriever": hybrid_retriever is not None,
+                "kg_database": kg_db is not None
             },
             "statistics": {
                 "total_triples": stats[0],
