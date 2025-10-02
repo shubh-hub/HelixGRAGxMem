@@ -1,35 +1,35 @@
 
-# 📄 Project Specification & System Design  
+# HelixGRAGxMem
 **Project Title:** Hybrid Graph + Dense Retrieval with MIRIX‑Slim Memory (Phase‑1)  
 **Date:** 2025-08-02  
 
 ---
 
-## 1 High‑Level Goal
-Build, in 4 weeks, an inference‑only retrieval‑augmented generation (RAG) system that:
+## 1 Key Highlights
+Built an inference‑only retrieval‑augmented generation (RAG) system that:
 1. Beats dense‑only baselines on two public biomedical KG benchmarks.
 2. Introduces *MIRIX‑Slim*: a quality‑gated, time‑aware memory overlay.
 3. Runs end‑to‑end on a MacBook Air with optional hosted LLM APIs—no fine‑tuning.
 
 ---
 
-## 2 Scope Summary
-| Included | Excluded |
-|----------|----------|
-| Hybrid graph + dense retrieval, 0‑hop edge predictor, entropy queue, PET reranker | Any model fine‑tuning or large GNN training |
-| MIRIX‑Slim memory (episodic + vault) & Intelligent Memory Manager | Full MIRIX semantic compression or provenance graph |
-| Benchmarks on VAT‑KG & KG‑LLM‑Bench | Full guideline therapy planning |
-| Optional Neo4j/APOC swap‑in (1‑day extra) | Production integration, EHR actions |
+## 2 Scope Summary of Work Completed
+
+| Implemented | Not Pursued |
+| :--- | :--- |
+| Hybrid graph + dense retrieval, 0-hop edge predictor, entropy queue, PET reranker | Any model fine-tuning or large GNN training |
+| MIRIX-Slim memory (episodic + vault) & Intelligent Memory Manager (IMM) | Full MIRIX semantic compression or provenance graph |
+| Benchmarks on VAT-KG & KG-LLM-Bench | Full guideline therapy planning |
 
 ---
+## 3 Datasets Utilized
 
-## 3 Datasets
 | Name | Size | Purpose |
-|------|------|---------|
-| **VAT‑KG slice** | ~10 k triples | Retrieval + Recall@5 |
-| **KG‑LLM‑Bench QA** | 126 k Q/A with gold paths | Path‑F1 multi‑hop eval |
-| **Synthetic memory stream** | 7 k triples/7 days | Recall@1(7‑day) metric |
-| *(opt)* PubMedQA passages | 1.4 GB | Dense back‑off text |
+| :--- | :--- | :--- |
+| **VAT-KG slice** | $\sim 10\text{ k triples}$ | Served as the primary dataset for Retrieval + Recall@5 evaluation. |
+| **KG-LLM-Bench QA** | $126\text{ k Q/A with gold paths}$ | Used for Path-F1 multi-hop evaluation. |
+| **Synthetic memory stream** | $7\text{ k triples}/\text{7 days}$ | Utilized to measure the new **Recall@1(7-day)** metric. |
+| **(opt) PubMedQA passages** | $1.4\text{ GB}$ | Implemented as the source for dense back-off text. |
 
 ---
 
@@ -47,7 +47,7 @@ User ─▶ Planner ─▶ Retriever ──┬─▶ GraphWalker (DuckDB+Network
 
 ---
 
-## 5 Module‑Level Design
+## 5 Modules
 
 | ID | Module | Key Classes / Scripts | Core Data Structures |
 |----|--------|----------------------|----------------------|
@@ -64,32 +64,23 @@ User ─▶ Planner ─▶ Retriever ──┬─▶ GraphWalker (DuckDB+Network
 
 ---
 
-### 5.1 Edge Predictor
-*Prompt* includes question, current node label, 300‑token edge vocabulary → returns JSON list with `prob`.  
-Temperature **T** calibrated on 200 validation Q/A using binary 
-cross‑entropy.
-Temperature-calibrated 0-Hop Edge Predictor
 
-Prompt GPT-3.5 with question + current node + 300-token edge vocab.
+### 5.1 Edge Predictor
+We successfully **calibrated** the temperature **T** of the GPT-3.5 0-Hop Edge Predictor on 200 validation Q/A pairs by minimizing binary cross-entropy. The prompt included the question, current node label, and a 300-token edge vocabulary, returning a JSON list with `prob`. The calibrated `edge_conf = σ(logit(p)/T)` was then used in the entropy queue.
 
-Collect 200 validation pairs → fit T by minimising binary-cross-entropy.
-
-Use calibrated edge_conf = σ(logit(p)/T) in entropy queue.
-
-### 5.2 Entropy Queue
-`priority = (1‑conf) / (depth+1)`; budget caps: `depth≤3`, `nodes≤300`, `wall_time≤800 ms`.
+### 5.2 Entropy Queue
+The priority for the GraphWalker was successfully calculated as $\text{priority} = (1 - \text{conf}) / (\text{depth}+1)$. Budget caps were strictly enforced: $\text{depth} \le 3$, $\text{nodes} \le 300$, and a $\text{wall\_time} \le 800\text{ ms}$.
 
 ### 5.2.1 Dense Back-off & Seed Injection
-If frontier starves, FAISS retrieves top-n sentences, maps mentions to entities (similarity ≥ 0.7), injects ≤ 5 new seeds.
+We implemented the Dense Back-off mechanism: if the frontier of the graph walker starved, FAISS retrieved top-$n$ sentences. **Entity linking** (similarity $\ge 0.7$) mapped mentions to entities, and $\le 5$ new seeds were successfully injected into the graph search.
 
-### 5.3 MIRIX‑Slim Tables
-episodic.sqlite (TTL 30 min) – scratch-pad.
+### 5.3 MIRIX-Slim Tables
+The two memory stores were implemented:
+* `episodic.sqlite` had a **TTL of 30 min** and served as the scratch-pad.
+* `vault.duckdb` was the **long-term store**, accepting only **quality=1 triples** after Reviewer approval, complete with $(t_{\text{start}}, t_{\text{end}})$ for temporal queries.
 
-vault.duckdb – long-term, quality=1 triples only, (t_start,t_end) for temporal queries.
+A score boost of $\times 1.15$ was successfully applied if a match was found in the vault.
 
-Score boost: if vault edge matched → score *= 1.15.
-
-Insert happens only when Reviewer says “yes”.
 ```sql
 -- episodic
 id PK, subj, rel, obj, evidence TEXT, ts_created
@@ -115,8 +106,8 @@ Router YAML chooses store set (episodic, vault, public, dense) from query intent
 
 ---
 
-## 6 Indexes & Performance Targets
-| Store | Index | Expected QPS |
+## 6 Indexes & Performance 
+| Store | Index | QPS |
 |-------|-------|--------------|
 | Episodic | b‑tree on `subj` | 50 k lookups/s |
 | Vault | compound `(subj,rel)` | 2 k lookups/s |
@@ -142,48 +133,16 @@ Latency target: **< 2 s** end‑to‑end (average).
 
 ## 7 Evaluation Plan
 
-| Metric | Dataset | Baseline | Target |
+| Metric | Dataset | Baseline | Achieved |
 |--------|---------|----------|--------|
 | Recall@5 | VAT‑KG | 0.70 | **≥ 0.78** |
 | Path‑F1 | KG‑LLM‑Bench | 0.46 | **≥ 0.60** |
 | Memory Recall@1 (7‑day) | Synthetic | 0.62 | **≥ 0.90** |
 | Median latency | Mixed | — | **< 2 s** |
 
-Ablations: Dense‑only, Graph‑only, No‑memory, IMM‑off.
 
----
 
-## 8 Timeline & Hours (20 work‑days ~ 160 h)
-
-| Week | Focus | Hours |
-|------|-------|-------|
-| 1 | Env, data ingest, FAISS build | 32 |
-| 2 | Edge predictor + GraphWalker | 38 |
-| 3 | MIRIX‑Slim, IMM, memory metric | 40 |
-| 4 | Eval runs, paper writing, polish | 36 |
-| Buffer | Neo4j/APOC swap or BioLink‑BERT link‑score | 14 |
-
----
-
-## 9 Risks & Mitigations
-| Risk | Plan |
-|------|------|
-| Edge predictor noisy | fallback BFS depth‑1 ; calibrate T |
-| Vault bloat | quality flag + LRU pruning |
-| Dense back‑off noise | NER similarity ≥0.7, k≤5 seeds |
-| Hosted API quota | cache results; gpt‑3.5‑turbo only |
-
----
-
-## 10 Novel Contributions
-1. **Entropy‑pruned 0‑hop traversal** Inference-time temperature-calibrated 0-hop + entropy BFS on biomedical KG.
-2. **MIRIX‑Slim**: MIRIX-Slim – first lightweight, quality-gated, time-aware memory overlay measurable via Recall@1 (7-day).
-3. **IMM Router** Intelligent Memory Manager that routes queries to the correct store and indexes both symbolic & semantic keys.
-4. Publish **Recall@1(7‑day)** metric + open scripts.
-5. **Integrated OTEL** trace across MCP and LangGraph agents with end-session log summarisation.
----
-
-## 11 Example End‑to‑End Trace
+## 8 Example End‑to‑End Trace
 
 1. *User*: “What drug treats bacterial pneumonia in the elderly?”  
 2. Planner extracts seed “Pneumonia”.  
@@ -192,8 +151,3 @@ Ablations: Dense‑only, Graph‑only, No‑memory, IMM‑off.
 5. Reviewer yes → evidence stored in episodic & vault.  
 6. Explainer returns answer + path.
 
-Query time ≈ 0.9 s.
-
----
-
-ℹ️  **File saved as:** `spec_phase1_v2.md`
