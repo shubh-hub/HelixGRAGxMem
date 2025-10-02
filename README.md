@@ -69,7 +69,7 @@ User ─▶ Planner ─▶ Retriever ──┬─▶ GraphWalker (DuckDB+Network
 We successfully **calibrated** the temperature **T** of the GPT-3.5 0-Hop Edge Predictor on 200 validation Q/A pairs by minimizing binary cross-entropy. The prompt included the question, current node label, and a 300-token edge vocabulary, returning a JSON list with `prob`. The calibrated `edge_conf = σ(logit(p)/T)` was then used in the entropy queue.
 
 ### 5.2 Entropy Queue
-The priority for the GraphWalker was successfully calculated as $\text{priority} = (1 - \text{conf}) / (\text{depth}+1)$. Budget caps were strictly enforced: $\text{depth} \le 3$, $\text{nodes} \le 300$, and a $\text{wall\_time} \le 800\text{ ms}$.
+Formula: `priority = (1‑conf) / (depth+1)`; budget caps: `depth≤3`, `nodes≤300`, `wall_time≤800 ms`.
 
 ### 5.2.1 Dense Back-off & Seed Injection
 We implemented the Dense Back-off mechanism: if the frontier of the graph walker starved, FAISS retrieved top-$n$ sentences. **Entity linking** (similarity $\ge 0.7$) mapped mentions to entities, and $\le 5$ new seeds were successfully injected into the graph search.
